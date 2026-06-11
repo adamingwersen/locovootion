@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { Sight } from "@/components/MapView";
 import { findNearbyLandmarks, fetchExtract, fetchExtracts } from "@/lib/wikipedia";
@@ -11,6 +11,16 @@ import {
   samplePath,
   type LatLng,
 } from "@/lib/geo";
+import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
 
 const MapView = dynamic(() => import("@/components/MapView"), {
   ssr: false,
@@ -28,6 +38,35 @@ type Segment = {
   lon?: number;
 };
 
+const VOICES = [
+  { id: "UgBBYS2sOqTuMpoF3BR0", name: "Mark", desc: "Casual" },
+  { id: "jfIS2w2yJi0grJZPyEsk", name: "Oliver", desc: "British" },
+  { id: "WtA85syCrJwasGeHGH2p", name: "Ember", desc: "Energetic" },
+  { id: "RaFzMbMIfqBcIurH6XF9", name: "Eryn", desc: "Informative" },
+  { id: "7AJyv0vI6pBx5JTb9p6C", name: "Charlie", desc: "Australian" },
+] as const;
+
+const TEST_PHRASE =
+  "Welcome to Copenhagen! Let me show you around this beautiful city.";
+
+function GearIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("pin");
   const [center, setCenter] = useState<LatLng>(COPENHAGEN);
@@ -38,10 +77,15 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Voice selection.
+  const [voiceId, setVoiceId] = useState<string>(VOICES[0].id);
+  const [testingVoiceId, setTestingVoiceId] = useState<string | null>(null);
+
   // Pin-mode narration result.
-  const [pinResult, setPinResult] = useState<{ title: string; script: string } | null>(
-    null
-  );
+  const [pinResult, setPinResult] = useState<{
+    title: string;
+    script: string;
+  } | null>(null);
 
   // Route-mode tour.
   const [tour, setTour] = useState<{
@@ -53,6 +97,32 @@ export default function Home() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioCache = useRef<Map<string, string>>(new Map());
+
+  // Sheet snap state.
+  const [sheetExpanded, setSheetExpanded] = useState(false);
+  const dragStartY = useRef<number | null>(null);
+
+  // Auto-expand sheet when results appear.
+  useEffect(() => {
+    if (pinResult || tour) setSheetExpanded(true);
+  }, [pinResult, tour]);
+
+  // Clear audio cache when voice changes.
+  useEffect(() => {
+    audioCache.current.clear();
+  }, [voiceId]);
+
+  // Sheet swipe handlers.
+  const onHandleTouchStart = useCallback((e: React.TouchEvent) => {
+    dragStartY.current = e.touches[0].clientY;
+  }, []);
+  const onHandleTouchEnd = useCallback((e: React.TouchEvent) => {
+    if (dragStartY.current === null) return;
+    const dy = e.changedTouches[0].clientY - dragStartY.current;
+    if (dy < -30) setSheetExpanded(true);
+    if (dy > 30) setSheetExpanded(false);
+    dragStartY.current = null;
+  }, []);
 
   const sights: Sight[] = useMemo(() => {
     if (mode === "route" && tour) {
@@ -73,6 +143,7 @@ export default function Home() {
     setMode(m);
     setError(null);
     stopPlayback();
+    setSheetExpanded(false);
     if (m === "pin") {
       setTour(null);
       setActiveIndex(null);
@@ -122,22 +193,25 @@ export default function Home() {
     setPlaying(false);
   }
 
-  const synthesize = useCallback(async (key: string, text: string) => {
-    const cached = audioCache.current.get(key);
-    if (cached) return cached;
-    const resp = await fetch("/api/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    if (!resp.ok) {
-      const e = await resp.json().catch(() => ({}));
-      throw new Error(e.detail || e.error || "Voice synthesis failed");
-    }
-    const url = URL.createObjectURL(await resp.blob());
-    audioCache.current.set(key, url);
-    return url;
-  }, []);
+  const synthesize = useCallback(
+    async (key: string, text: string) => {
+      const cached = audioCache.current.get(key);
+      if (cached) return cached;
+      const resp = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voiceId }),
+      });
+      if (!resp.ok) {
+        const e = await resp.json().catch(() => ({}));
+        throw new Error(e.detail || e.error || "Voice synthesis failed");
+      }
+      const url = URL.createObjectURL(await resp.blob());
+      audioCache.current.set(key, url);
+      return url;
+    },
+    [voiceId]
+  );
 
   const playSegment = useCallback(
     async (index: number) => {
@@ -161,6 +235,10 @@ export default function Home() {
         };
         await audio.play();
       } catch (e) {
+        if (e instanceof DOMException && e.name === "NotAllowedError") {
+          setPlaying(false);
+          return;
+        }
         setError(e instanceof Error ? e.message : "Playback failed");
         setPlaying(false);
       }
@@ -182,6 +260,30 @@ export default function Home() {
     }
   }, [playing, playSegment, activeIndex]);
 
+  // ---------- Voice preview ----------
+  const testVoice = useCallback(async (id: string) => {
+    setTestingVoiceId(id);
+    try {
+      const resp = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: TEST_PHRASE, voiceId: id }),
+      });
+      if (!resp.ok) throw new Error("Voice test failed");
+      const url = URL.createObjectURL(await resp.blob());
+      const audio = audioRef.current;
+      if (audio) {
+        audio.src = url;
+        audio.onended = null;
+        await audio.play().catch(() => {});
+      }
+    } catch {
+      setError("Voice test failed. Check your ElevenLabs API key.");
+    } finally {
+      setTestingVoiceId(null);
+    }
+  }, []);
+
   // ---------- Pin narration ----------
   const narratePin = useCallback(async () => {
     if (!pin) return;
@@ -191,7 +293,9 @@ export default function Home() {
     try {
       const found = await findNearbyLandmarks(pin.lat, pin.lon, 600, 10);
       if (!found.length) {
-        throw new Error("No notable landmarks found near this spot. Try another pin.");
+        throw new Error(
+          "No notable landmarks found near this spot. Try another pin."
+        );
       }
       const nearest = found[0];
       const summary = await fetchExtract(nearest.pageid).catch(() => "");
@@ -260,7 +364,9 @@ export default function Home() {
         }
       }
       if (byId.size === 0) {
-        throw new Error("No landmarks found along this route. Try drawing through the city center.");
+        throw new Error(
+          "No landmarks found along this route. Try drawing through the city center."
+        );
       }
 
       const unique = [...byId.values()];
@@ -351,19 +457,56 @@ export default function Home() {
             <div className="brand-sub">AI walking guide · Copenhagen</div>
           </div>
         </div>
-        <div className="segmented">
-          <button
-            className={mode === "pin" ? "active" : ""}
-            onClick={() => resetForMode("pin")}
-          >
-            Pin
-          </button>
-          <button
-            className={mode === "route" ? "active" : ""}
-            onClick={() => resetForMode("route")}
-          >
-            Route
-          </button>
+
+        <div className="topbar-right">
+          <div className="segmented">
+            <button
+              className={mode === "pin" ? "active" : ""}
+              onClick={() => resetForMode("pin")}
+            >
+              Pin
+            </button>
+            <button
+              className={mode === "route" ? "active" : ""}
+              onClick={() => resetForMode("route")}
+            >
+              Route
+            </button>
+          </div>
+
+          <Popover>
+            <PopoverTrigger className="settings-btn" aria-label="Settings">
+              <GearIcon />
+            </PopoverTrigger>
+            <PopoverContent align="end" sideOffset={8} className="settings-popover">
+              <PopoverHeader>
+                <PopoverTitle>Narrator voice</PopoverTitle>
+              </PopoverHeader>
+              <RadioGroup value={voiceId} onValueChange={setVoiceId}>
+                {VOICES.map((v) => (
+                  <div key={v.id} className="voice-row">
+                    <RadioGroupItem value={v.id} id={`voice-${v.id}`} />
+                    <Label htmlFor={`voice-${v.id}`} className="voice-label">
+                      <span className="voice-name">{v.name}</span>
+                      <span className="voice-desc">{v.desc}</span>
+                    </Label>
+                    <button
+                      className="voice-test-btn"
+                      onClick={() => testVoice(v.id)}
+                      disabled={testingVoiceId !== null}
+                      aria-label={`Test ${v.name}`}
+                    >
+                      {testingVoiceId === v.id ? (
+                        <span className="spinner-sm" />
+                      ) : (
+                        "▶"
+                      )}
+                    </button>
+                  </div>
+                ))}
+              </RadioGroup>
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 
@@ -373,8 +516,13 @@ export default function Home() {
         </button>
       </div>
 
-      <div className="sheet">
-        <div className="sheet-handle" />
+      <div className={`sheet${sheetExpanded ? " expanded" : ""}`}>
+        <div
+          className="sheet-handle"
+          onTouchStart={onHandleTouchStart}
+          onTouchEnd={onHandleTouchEnd}
+          onClick={() => setSheetExpanded((v) => !v)}
+        />
         <div className="sheet-scroll">
           {error && <div className="error">{error}</div>}
 
@@ -389,7 +537,11 @@ export default function Home() {
                 </div>
               )}
               {pin && !pinResult && (
-                <button className="btn" onClick={narratePin} disabled={loading}>
+                <Button
+                  className="btn-gradient sheet-action-btn"
+                  onClick={narratePin}
+                  disabled={loading}
+                >
                   {loading ? (
                     <>
                       <span className="spinner" /> Researching this spot…
@@ -397,26 +549,27 @@ export default function Home() {
                   ) : (
                     "Tell me about here"
                   )}
-                </button>
+                </Button>
               )}
               {pinResult && (
                 <div className="narration">
                   <h2>{pinResult.title}</h2>
                   <p className="script">{pinResult.script}</p>
                   <div className="btn-row">
-                    <button
-                      className="btn ghost"
+                    <Button
+                      variant="ghost"
+                      className="btn-glass flex-1"
                       onClick={() => audioRef.current?.play()}
                     >
                       ▶ Replay
-                    </button>
-                    <button
-                      className="btn"
+                    </Button>
+                    <Button
+                      className="btn-gradient flex-1"
                       onClick={narratePin}
                       disabled={loading}
                     >
                       {loading ? <span className="spinner" /> : "Pick again"}
-                    </button>
+                    </Button>
                   </div>
                 </div>
               )}
@@ -430,8 +583,8 @@ export default function Home() {
                   <div className="hint">
                     <span>
                       <span className="kbd">Tap to drop waypoints</span> and
-                      trace a walk. I&apos;ll find the key sights along it and
-                      narrate them at a slow strolling pace.
+                      trace a walk. I&apos;ll find the key sights along it
+                      and narrate them at a slow strolling pace.
                     </span>
                   </div>
                   {path.length > 0 && (
@@ -447,23 +600,25 @@ export default function Home() {
                     </div>
                   )}
                   <div className="btn-row">
-                    <button
-                      className="btn ghost"
+                    <Button
+                      variant="ghost"
+                      className="btn-glass flex-1"
                       onClick={() => setPath((p) => p.slice(0, -1))}
                       disabled={path.length === 0 || loading}
                     >
                       Undo
-                    </button>
-                    <button
-                      className="btn ghost"
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      className="btn-glass flex-1"
                       onClick={() => setPath([])}
                       disabled={path.length === 0 || loading}
                     >
                       Clear
-                    </button>
+                    </Button>
                   </div>
-                  <button
-                    className="btn"
+                  <Button
+                    className="btn-gradient sheet-action-btn"
                     onClick={generateTour}
                     disabled={path.length < 2 || loading}
                   >
@@ -474,7 +629,7 @@ export default function Home() {
                     ) : (
                       "Generate guided walk"
                     )}
-                  </button>
+                  </Button>
                 </>
               )}
 
@@ -487,23 +642,26 @@ export default function Home() {
                     <span>
                       ~<strong>{tour.minutes}</strong> min sluggish stroll
                     </span>
-                    <button
-                      className="btn ghost"
-                      style={{ width: "auto", marginLeft: "auto", padding: "8px 12px" }}
+                    <Button
+                      variant="ghost"
+                      className="btn-glass ml-auto !w-auto !px-3 !py-2"
                       onClick={() => {
                         setTour(null);
                         setActiveIndex(null);
                         stopPlayback();
+                        setSheetExpanded(false);
                       }}
                     >
                       New route
-                    </button>
+                    </Button>
                   </div>
 
                   <div className="transport">
                     <button
                       className="step"
-                      onClick={() => playSegment(Math.max(0, (activeIndex ?? 0) - 1))}
+                      onClick={() =>
+                        playSegment(Math.max(0, (activeIndex ?? 0) - 1))
+                      }
                       disabled={(activeIndex ?? 0) <= 0}
                     >
                       ⏮
@@ -515,7 +673,10 @@ export default function Home() {
                       className="step"
                       onClick={() =>
                         playSegment(
-                          Math.min(tour.segments.length - 1, (activeIndex ?? 0) + 1)
+                          Math.min(
+                            tour.segments.length - 1,
+                            (activeIndex ?? 0) + 1
+                          )
                         )
                       }
                       disabled={(activeIndex ?? 0) >= tour.segments.length - 1}

@@ -14,8 +14,9 @@ export async function POST(req: NextRequest) {
   }
 
   let text: string | undefined;
+  let clientVoiceId: string | undefined;
   try {
-    ({ text } = await req.json());
+    ({ text, voiceId: clientVoiceId } = await req.json());
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing 'text'" }, { status: 400 });
   }
 
-  const voiceId = process.env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE_ID;
+  const voiceId = clientVoiceId || process.env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE_ID;
 
   const resp = await fetch(
     `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
